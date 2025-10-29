@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         (v5.0) 终极版-全自动播放列表模拟器
+// @name         (v5.1) 终极版-全自动播放列表模拟器 (含错误处理)
 // @namespace    http://tampermonkey.net/
-// @version      5.0
-// @description  自动嗅探 lessonVideoResourceList，获取播放列表并全自动模拟所有视频的心跳包。
+// @version      5.1
+// @description  自动嗅探 lessonVideoResourceList，获取播放列表并全自动模拟所有视频的心跳包，增加10012错误码刷新处理。
 // @author       You
 // @match        https://dx.scu.edu.cn/videodetails/*
 // @grant        unsafeWindow
@@ -20,12 +20,12 @@
     let simulatedTimeInSeconds = 0; // 模拟的当前时间（秒）
     let isTrackerRunning = false;   // 跟踪器是否已在运行
 
-    console.log("%c[Auto-Tracker] v5.0 终极版已启动！等待页面加载...", "color: #00aaff; font-weight: bold;");
+    console.log("%c[Auto-Tracker] v5.1 启动成功！等待页面加载...", "color: #00aaff; font-weight: bold;");
 
     // ===================================================================
-    // 
+    //
     //  TRACKER 模块 (模拟器核心)
-    // 
+    //
     // ===================================================================
 
     /**
@@ -47,7 +47,7 @@
             if (simulatedTimeInSeconds >= totalDurationInSeconds) {
                 console.log(`%c[Auto-Tracker] 视频 "${currentVideo.resourceTitle}" 已完成。`, "color: #00cc66;");
                 // 发送最后一次完美的心跳包
-                await sendHeartbeat(totalDurationInSeconds); 
+                await sendHeartbeat(totalDurationInSeconds);
                 stopTracker();
                 startNextVideo(); // 自动播放下一个
                 return;
@@ -58,7 +58,7 @@
 
             // 确保不会超过总时长 (只在最后一次发送时才等于总时长)
             const timeToSend = Math.min(simulatedTimeInSeconds, totalDurationInSeconds);
-            
+
             await sendHeartbeat(timeToSend);
 
         } catch (e) {
@@ -69,6 +69,7 @@
 
     /**
      * 真正发送心跳包的函数
+     * !! 这是 v5.1 更新的核心 !!
      */
     async function sendHeartbeat(secondsToSend) {
         const timeString = formatTime(secondsToSend);
@@ -79,31 +80,47 @@
         const formData = new FormData();
         formData.append("resourceId", resourceId);
         formData.append(SCRIPT_CONFIG.timeField, timeString);
-        // 如果有其他静态字段，也一并添加
         if (SCRIPT_CONFIG.staticData) {
             for (const key in SCRIPT_CONFIG.staticData) {
                 formData.append(key, SCRIPT_CONFIG.staticData[key]);
             }
         }
 
-        const response = await fetch(SCRIPT_CONFIG.url, {
-            method: "POST",
-            headers: SCRIPT_CONFIG.headers,
-            body: formData,
-            mode: "cors",
-            credentials: "include"
-        });
+        try {
+            const response = await fetch(SCRIPT_CONFIG.url, {
+                method: "POST",
+                headers: SCRIPT_CONFIG.headers,
+                body: formData,
+                mode: "cors",
+                credentials: "include"
+            });
 
-        const data = await response.json();
-        
-        if (response.ok) {
-            console.log(`%c[Auto-Tracker] 发送成功 ${timeString} ->`, "color: #00cc66;", data);
-        } else {
-            console.error(`[Auto-Tracker] 服务器返回错误 (Status: ${response.status}):`, data);
-            if (response.status === 401 || response.status === 403) {
-                 console.error("[Auto-Tracker] 身份验证(Token)失效，请刷新页面以重新捕获。");
+            const data = await response.json();
+
+            // 1. 优先检查 10012 错误码 (来自你的新需求)
+            if (data.code === 10012) {
+                console.error(`[Auto-Tracker] 检测到网络不稳定 (code: 10012)，服务器要求刷新。将在10秒后自动刷新...`);
+                stopTracker(); // 停止定时器
+                setTimeout(() => {
+                    location.reload(); // 刷新页面
+                }, 10000); // 延迟10秒刷新，以便查看日志
+                return; // 停止当前函数
             }
-            stopTracker(); // 遇到错误停止
+
+            // 2. 检查 HTTP 状态 和 业务成功码 (来自你的报文: 99999)
+            if (response.ok && data.code === 99999) {
+                console.log(`%c[Auto-Tracker] 发送成功 ${timeString} ->`, "color: #00cc66;", data);
+            } else {
+                // 3. 处理其他所有错误
+                console.error(`[Auto-Tracker] 服务器返回错误 (Status: ${response.status}, Code: ${data.code || 'N/A'}):`, data);
+                if (response.status === 401 || response.status === 403) {
+                     console.error("[Auto-Tracker] 身份验证(Token)失效！脚本已停止。请刷新页面以重新捕获新 Token。");
+                }
+                stopTracker(); // 遇到任何其他错误都停止
+            }
+        } catch (error) {
+            console.error(`[Auto-Tracker] sendHeartbeat: fetch 本身失败 (网络中断?):`, error);
+            stopTracker(); // 网络层失败也停止
         }
     }
 
@@ -136,14 +153,14 @@
         - 总时长: ${video.resourceDuration}
         - 开始时间: ${formatTime(simulatedTimeInSeconds)}
         - 发送间隔: ${SCRIPT_CONFIG.intervalInSeconds} 秒
-        
+
         (如需手动停止, 请在控制台输入: stopAutoTracker())`, "color: #00cc66; font-weight: bold;");
 
         // 立即先发送一次启动时间
         runTracker();
-        
+
         // 启动定时器
-        timeTrackerInterval = setInterval(runTracker, SCRIPT_CONFIG.intervalInSeconds * 1000);
+        timeTrackerInterval = setInterval(runTracker, 10 * 1000);
     }
 
     /**
@@ -172,14 +189,14 @@
         console.log(`%c[Auto-Tracker] 准备切换到下一个视频...`, "color: orange;");
         startTracker(nextIndex);
     }
-    
+
     // 暴露一个手动停止的方法到全局，方便调试
     unsafeWindow.stopAutoTracker = stopTracker;
 
     // ===================================================================
-    // 
+    //
     //  HELPER 模块 (工具函数)
-    // 
+    //
     // ===================================================================
 
     /**
@@ -213,9 +230,9 @@
     }
 
     // ===================================================================
-    // 
+    //
     //  SNIFFER 模块 (v5.0)
-    // 
+    //
     // ===================================================================
 
     /**
@@ -223,15 +240,21 @@
      */
     function processAndStoreConfig(url, headersObj, formDataBody, responseText) {
         try {
+            // 防止重复处理
+            if (isTrackerRunning || SCRIPT_CONFIG.url) {
+                console.log("[Auto-Tracker] 嗅探器：检测到请求，但模拟器已在运行。");
+                return;
+            }
+
             console.log("[Auto-Tracker] 嗅探器：捕获到 'lessonVideoResourceList'！");
-            
+
             // 1. 解析响应
             const response = JSON.parse(responseText);
             if (!response.data || !response.data.playList) {
                 console.error("[Auto-Tracker] 嗅探器：响应格式不正确，未找到 playList。");
                 return;
             }
-            
+
             videoPlaylist = response.data.playList;
             if (videoPlaylist.length === 0) {
                 console.error("[Auto-Tracker] 嗅探器：播放列表为空。");
@@ -269,12 +292,12 @@
             // 5. 决定从哪里开始
             const lastResourceId = response.data.lastResourceId;
             let startIndex = videoPlaylist.findIndex(v => v.resourceId === lastResourceId);
-            
+
             if (startIndex === -1) {
                 console.warn(`[Auto-Tracker] 嗅探器：未找到 lastResourceId (${lastResourceId})，从第一个视频开始。`);
                 startIndex = 0;
             }
-            
+
             // 检查这个视频是否已经完成了
             if (videoPlaylist[startIndex].state === 1) {
                  console.log(`[Auto-Tracker] 视频 "${videoPlaylist[startIndex].resourceTitle}" (state=1) 已完成。`);
@@ -288,9 +311,9 @@
                      return; // 不启动
                  }
             }
-            
+
             console.log("%c[Auto-Tracker] 嗅探器：成功捕获所有配置！", "color: #00cc66; font-weight: bold;");
-            
+
             // 6. 启动模拟器
             startTracker(startIndex);
 
@@ -322,14 +345,14 @@
     unsafeWindow.XMLHttpRequest.prototype.send = function(body) {
         // 'body' 在这里就是 FormData 对象
         if (this._sniffer_url && this._sniffer_url.includes("/lesson/lessonVideoResourceList")) {
-            
+
             // 关键：我们必须在 'send' 时附加 'onload' 监听器来读取响应
             this.addEventListener('load', function() {
                 if (this.status === 200) {
                     // (this._sniffer_headers) 是请求头
                     // (body) 是请求体
                     // (this.responseText) 是响应体
-                    processAndStoreConfig(this._sniffer_url, this._sniffer_headers || {}, body, this.responseText);
+                    processAndStoreConfig(this._sniffer_Surl, this._sniffer_headers || {}, body, this.responseText);
                 } else {
                     console.error(`[Auto-Tracker] 嗅探器：'lessonVideoResourceList' 请求失败，状态码: ${this.status}`);
                 }
@@ -345,17 +368,17 @@
      */
     const originalFetch = unsafeWindow.fetch;
     unsafeWindow.fetch = async function(url, options) {
-        
+
         const urlString = (url instanceof Request) ? url.url : url;
-        
+
         // 调用原始 fetch
         const response = await originalFetch.apply(this, arguments);
 
         // 检查是不是我们要找的请求
         if (typeof urlString === 'string' && urlString.includes("/lesson/lessonVideoResourceList")) {
-            
+
             const clonedResponse = response.clone(); // 克隆响应体以便读取
-            
+
             const headersObj = {};
             if (options && options.headers) {
                 if (options.headers instanceof Headers) {
@@ -367,13 +390,13 @@
                     }
                 }
             }
-            
+
             const responseText = await clonedResponse.text();
-            
+
             // (options.body) 是请求体
             processAndStoreConfig(urlString, headersObj, options.body, responseText);
         }
-        
+
         return response; // 返回原始响应
     };
     console.log("[Auto-Tracker] 'fetch' 嗅探器已部署。");
